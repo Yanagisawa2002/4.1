@@ -1,0 +1,23 @@
+{
+  "split_type": "cross-disease",
+  "seed": 42,
+  "val_ratio": 0.1,
+  "test_ratio": 0.1,
+  "counts": {
+    "kg_pos": {
+      "train": 7356,
+      "val": 988,
+      "test": 1044
+    },
+    "kg_neg": {
+      "train": 7356,
+      "val": 988,
+      "test": 1044
+    },
+    "ho": {
+      "train": 561,
+      "val": 24,
+      "test": 36
+    }
+  }
+}

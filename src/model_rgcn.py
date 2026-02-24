@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Optional
+from typing import Mapping, Optional
 
 import torch
 import torch.nn as nn
@@ -104,6 +104,17 @@ class BaseRGCNPairModel(nn.Module):
             nn.Dropout(config.dropout),
             nn.Linear(config.pair_hidden_dim, 1),
         )
+        self.hyperedge_head = nn.Sequential(
+            nn.Linear(config.hidden_dim * 4, config.hidden_dim),
+            nn.ReLU(),
+            nn.Dropout(config.dropout),
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+        )
+        self.proj_head = nn.Sequential(
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+            nn.ReLU(),
+            nn.Linear(config.hidden_dim, config.hidden_dim),
+        )
         self.reset_parameters()
 
     def reset_parameters(self) -> None:
@@ -111,6 +122,14 @@ class BaseRGCNPairModel(nn.Module):
         for layer in self.layers:
             layer.reset_parameters()
         for module in self.pair_head:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.zeros_(module.bias)
+        for module in self.hyperedge_head:
+            if isinstance(module, nn.Linear):
+                nn.init.xavier_uniform_(module.weight)
+                nn.init.zeros_(module.bias)
+        for module in self.proj_head:
             if isinstance(module, nn.Linear):
                 nn.init.xavier_uniform_(module.weight)
                 nn.init.zeros_(module.bias)
@@ -146,16 +165,35 @@ class BaseRGCNPairModel(nn.Module):
         edge_type: torch.LongTensor,
         drug_index: torch.LongTensor,
         disease_index: torch.LongTensor,
-        ho_batch: Optional[object] = None,
+        ho_batch: Optional[Mapping[str, torch.Tensor]] = None,
         return_node_embeddings: bool = False,
-    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor]:
-        del ho_batch  # Reserved for future HO integration.
+    ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor] | tuple[torch.Tensor, Mapping[str, torch.Tensor]]:
         node_embeddings = self.encode(edge_index=edge_index, edge_type=edge_type)
         logits = self.score_pairs(
             node_embeddings=node_embeddings,
             drug_index=drug_index,
             disease_index=disease_index,
         )
+        if ho_batch is not None:
+            ho_drug_h = node_embeddings[ho_batch["drug_index"]]
+            ho_protein_h = node_embeddings[ho_batch["protein_index"]]
+            ho_pathway_h = node_embeddings[ho_batch["pathway_index"]]
+            ho_disease_h = node_embeddings[ho_batch["disease_index"]]
+            z_q = self.hyperedge_head(
+                torch.cat((ho_drug_h, ho_protein_h, ho_pathway_h, ho_disease_h), dim=-1)
+            )
+            ho_outputs: dict[str, torch.Tensor] = {
+                "z_q": z_q,
+                "proj_drug": self.proj_head(ho_drug_h),
+                "proj_protein": self.proj_head(ho_protein_h),
+                "proj_pathway": self.proj_head(ho_pathway_h),
+                "proj_disease": self.proj_head(ho_disease_h),
+            }
+            if "weight" in ho_batch:
+                ho_outputs["w_q"] = ho_batch["weight"]
+            if return_node_embeddings:
+                ho_outputs["node_embeddings"] = node_embeddings
+            return logits, ho_outputs
         if return_node_embeddings:
             return logits, node_embeddings
         return logits

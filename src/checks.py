@@ -85,6 +85,31 @@ def assert_ho_alignment_with_kg(
                 )
 
 
+def assert_ho_alignment(
+    ho_train: Sequence[HOQuad],
+    kg_pos_train: Sequence[Edge],
+) -> None:
+    kg_pairs = {(drug, disease) for drug, disease in kg_pos_train}
+    for quad in ho_train:
+        if len(quad) != 4:
+            raise AssertionError(f"Invalid HO quadruplet (need 4 values): {quad}")
+        pair = (quad[0], quad[3])
+        if pair not in kg_pairs:
+            raise AssertionError(
+                "HO train alignment violated: quadruplet pair not in KG train positives. "
+                f"pair={pair}"
+            )
+
+
+def assert_ho_train_only(split_names: Sequence[str]) -> None:
+    invalid = [name for name in split_names if name != "train"]
+    if invalid:
+        raise AssertionError(
+            "HO leakage guard violated: training must use only ho_train. "
+            f"Found disallowed splits={invalid}"
+        )
+
+
 def assert_pair_loader_integrity(
     kg_pos_splits: Mapping[str, Sequence[Edge]],
     kg_neg_splits: Mapping[str, Sequence[Edge]],

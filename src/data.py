@@ -1,21 +1,27 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 import csv
+import math
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Sequence, Tuple
+import random
+from typing import Dict, Iterable, Iterator, List, Mapping, Sequence, Tuple
 
 import torch
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, Sampler, TensorDataset
 
 from src.checks import (
     assert_cross_disease_disjointness,
     assert_cross_drug_disjointness,
     assert_edge_disjointness,
+    assert_ho_alignment,
+    assert_ho_train_only,
     assert_pair_loader_integrity,
 )
 
 Edge = Tuple[str, str]
+HOQuad = Tuple[str, str, str, str]
 CanonicalEdgeType = Tuple[str, str, str]
 SPLIT_NAMES = ("train", "val", "test")
 PREFERRED_NODE_TYPE_ORDER = ("drug", "disease", "gene/protein", "protein", "pathway")
@@ -43,6 +49,103 @@ class PairSplitData:
 
 
 @dataclass(frozen=True)
+class HOSplitData:
+    quadruplets: Tuple[HOQuad, ...]
+    drug_index: torch.LongTensor
+    protein_index: torch.LongTensor
+    pathway_index: torch.LongTensor
+    disease_index: torch.LongTensor
+    weight: torch.FloatTensor
+
+    @property
+    def total(self) -> int:
+        return len(self.quadruplets)
+
+
+class _BalancedHOBatchSampler(Sampler[List[int]]):
+    def __init__(
+        self,
+        key_indices: Sequence[int],
+        batch_size: int,
+        seed: int,
+    ) -> None:
+        if batch_size <= 0:
+            raise ValueError("batch_size must be > 0 for HO sampling")
+        if len(key_indices) == 0:
+            raise ValueError("Cannot create HO sampler from empty ho_train.")
+
+        self.batch_size = int(batch_size)
+        self.seed = int(seed)
+        self.epoch = 0
+        self.num_samples = len(key_indices)
+
+        grouped: Dict[int, List[int]] = defaultdict(list)
+        for idx, key in enumerate(key_indices):
+            grouped[int(key)].append(idx)
+        self.groups = {group: tuple(indices) for group, indices in grouped.items()}
+        self.group_keys = tuple(sorted(self.groups.keys()))
+        if not self.group_keys:
+            raise ValueError("No groups found for HO balanced sampling.")
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = int(epoch)
+
+    def __iter__(self) -> Iterator[List[int]]:
+        rng = random.Random(self.seed + self.epoch)
+        per_group: Dict[int, List[int]] = {}
+        for group, indices in self.groups.items():
+            shuffled = list(indices)
+            rng.shuffle(shuffled)
+            per_group[group] = shuffled
+
+        group_order = list(self.group_keys)
+        rng.shuffle(group_order)
+        if not group_order:
+            raise ValueError("Balanced HO sampler has no groups to sample from.")
+
+        pointers = {group: 0 for group in group_order}
+        sampled_indices: List[int] = []
+        group_cursor = 0
+        while len(sampled_indices) < self.num_samples:
+            group = group_order[group_cursor % len(group_order)]
+            group_cursor += 1
+            group_items = per_group[group]
+            idx = group_items[pointers[group] % len(group_items)]
+            pointers[group] += 1
+            sampled_indices.append(idx)
+
+        for start in range(0, len(sampled_indices), self.batch_size):
+            yield sampled_indices[start : start + self.batch_size]
+
+    def __len__(self) -> int:
+        return math.ceil(self.num_samples / self.batch_size)
+
+
+class HOTrainLoader:
+    def __init__(
+        self,
+        dataset: TensorDataset,
+        batch_sampler: _BalancedHOBatchSampler,
+        num_workers: int = 0,
+    ) -> None:
+        self._batch_sampler = batch_sampler
+        self._loader = DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+        )
+
+    def set_epoch(self, epoch: int) -> None:
+        self._batch_sampler.set_epoch(epoch)
+
+    def __iter__(self):
+        return iter(self._loader)
+
+    def __len__(self) -> int:
+        return len(self._loader)
+
+
+@dataclass(frozen=True)
 class RGCNGraph:
     node_to_local: Dict[str, Dict[str, int]]
     local_to_node: Dict[str, Tuple[str, ...]]
@@ -66,7 +169,7 @@ class RGCNGraph:
 class BaseDataBundle:
     graph: RGCNGraph
     pair_splits: Dict[str, PairSplitData]
-    ho_splits: Dict[str, None]
+    ho_splits: Dict[str, HOSplitData]
 
     def make_pair_loader(
         self,
@@ -88,6 +191,42 @@ class BaseDataBundle:
             shuffle=shuffle,
             num_workers=num_workers,
             generator=generator,
+        )
+
+    def make_ho_train_loader(
+        self,
+        batch_size: int,
+        seed: int,
+        balance_key: str = "drug",
+        num_workers: int = 0,
+    ) -> HOTrainLoader:
+        assert_ho_train_only(("train",))
+        if balance_key not in {"drug", "disease"}:
+            raise ValueError("balance_key must be one of {'drug', 'disease'}.")
+        ho_train = self.ho_splits["train"]
+        if ho_train.total == 0:
+            raise ValueError("ho_train is empty; cannot create HO train loader.")
+
+        if balance_key == "drug":
+            key_tensor = ho_train.drug_index
+        else:
+            key_tensor = ho_train.disease_index
+        batch_sampler = _BalancedHOBatchSampler(
+            key_indices=key_tensor.tolist(),
+            batch_size=batch_size,
+            seed=seed,
+        )
+        dataset = TensorDataset(
+            ho_train.drug_index,
+            ho_train.protein_index,
+            ho_train.pathway_index,
+            ho_train.disease_index,
+            ho_train.weight,
+        )
+        return HOTrainLoader(
+            dataset=dataset,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
         )
 
 
@@ -116,11 +255,15 @@ def prepare_base_data(
         graph=graph,
         split_type=split_type,
     )
+    ho_splits = load_ho_splits(
+        split_dir=split_dir,
+        graph=graph,
+        pair_splits=pair_splits,
+    )
     return BaseDataBundle(
         graph=graph,
         pair_splits=pair_splits,
-        # Reserved for future HO batching integration.
-        ho_splits={name: None for name in SPLIT_NAMES},
+        ho_splits=ho_splits,
     )
 
 
@@ -430,6 +573,95 @@ def load_pair_splits(
     return split_data
 
 
+def load_ho_splits(
+    split_dir: str | Path,
+    graph: RGCNGraph,
+    pair_splits: Mapping[str, PairSplitData],
+) -> Dict[str, HOSplitData]:
+    split_dir = Path(split_dir)
+    ho_quads_by_split: Dict[str, List[HOQuad]] = {}
+    for split_name in SPLIT_NAMES:
+        ho_quads_by_split[split_name] = _read_ho_quad_file(split_dir / f"ho_{split_name}.csv")
+
+    assert_ho_alignment(
+        ho_train=ho_quads_by_split["train"],
+        kg_pos_train=pair_splits["train"].positive_edges,
+    )
+
+    protein_freq: Dict[str, int] = defaultdict(int)
+    pathway_freq: Dict[str, int] = defaultdict(int)
+    for _, protein, pathway, _ in ho_quads_by_split["train"]:
+        protein_freq[protein] += 1
+        pathway_freq[pathway] += 1
+
+    split_data: Dict[str, HOSplitData] = {}
+    for split_name in SPLIT_NAMES:
+        quads = tuple(ho_quads_by_split[split_name])
+        drug_indices: List[int] = []
+        protein_indices: List[int] = []
+        pathway_indices: List[int] = []
+        disease_indices: List[int] = []
+        weights: List[float] = []
+
+        for quad in quads:
+            drug, protein, pathway, disease = quad
+            drug_indices.append(
+                _resolve_global_node_index(
+                    graph=graph,
+                    node_id=drug,
+                    allowed_types=("drug",),
+                    context=f"ho_{split_name}",
+                )
+            )
+            protein_indices.append(
+                _resolve_global_node_index(
+                    graph=graph,
+                    node_id=protein,
+                    allowed_types=("gene/protein", "protein"),
+                    context=f"ho_{split_name}",
+                )
+            )
+            pathway_indices.append(
+                _resolve_global_node_index(
+                    graph=graph,
+                    node_id=pathway,
+                    allowed_types=("pathway",),
+                    context=f"ho_{split_name}",
+                )
+            )
+            disease_indices.append(
+                _resolve_global_node_index(
+                    graph=graph,
+                    node_id=disease,
+                    allowed_types=("disease",),
+                    context=f"ho_{split_name}",
+                )
+            )
+
+            if split_name == "train":
+                denom = protein_freq[protein] + pathway_freq[pathway]
+                if denom <= 0:
+                    raise ValueError(
+                        "Invalid HO train frequency denominator for quad "
+                        f"{quad}: protein_freq={protein_freq[protein]}, "
+                        f"pathway_freq={pathway_freq[pathway]}"
+                    )
+                weights.append(1.0 / math.sqrt(float(denom)))
+            else:
+                weights.append(1.0)
+
+        split_data[split_name] = HOSplitData(
+            quadruplets=quads,
+            drug_index=torch.tensor(drug_indices, dtype=torch.long),
+            protein_index=torch.tensor(protein_indices, dtype=torch.long),
+            pathway_index=torch.tensor(pathway_indices, dtype=torch.long),
+            disease_index=torch.tensor(disease_indices, dtype=torch.long),
+            weight=torch.tensor(weights, dtype=torch.float32),
+        )
+
+    return split_data
+
+
 def _read_pair_edge_file(path: Path) -> List[Edge]:
     rows = _read_rows(path)
     drug_col = _resolve_column(rows[0], ("drug",))
@@ -444,6 +676,42 @@ def _read_pair_edge_file(path: Path) -> List[Edge]:
     return edges
 
 
+def _read_ho_quad_file(path: Path) -> List[HOQuad]:
+    quads: List[HOQuad] = []
+    delimiter = _guess_delimiter(path)
+    with path.open("r", encoding="utf-8-sig", newline="") as handle:
+        reader = csv.DictReader(handle, delimiter=delimiter)
+        if not reader.fieldnames:
+            raise ValueError(f"No header detected in {path}")
+        header_row = {field.strip(): "" for field in reader.fieldnames if field is not None}
+        drug_col = _resolve_column(header_row, ("drug",))
+        protein_col = _resolve_column(header_row, ("protein",))
+        pathway_col = _resolve_column(header_row, ("pathway",))
+        disease_col = _resolve_column(header_row, ("disease",))
+
+        for i, row in enumerate(reader, start=2):
+            drug = row[drug_col].strip() if isinstance(row[drug_col], str) else row[drug_col]
+            protein = (
+                row[protein_col].strip()
+                if isinstance(row[protein_col], str)
+                else row[protein_col]
+            )
+            pathway = (
+                row[pathway_col].strip()
+                if isinstance(row[pathway_col], str)
+                else row[pathway_col]
+            )
+            disease = (
+                row[disease_col].strip()
+                if isinstance(row[disease_col], str)
+                else row[disease_col]
+            )
+            if not drug or not protein or not pathway or not disease:
+                raise ValueError(f"Empty HO value at row {i} in {path}")
+            quads.append((drug, protein, pathway, disease))
+    return quads
+
+
 def _extract_drug_disease_pair(
     src: str,
     src_type: str,
@@ -455,6 +723,25 @@ def _extract_drug_disease_pair(
     if src_type == "disease" and dst_type == "drug":
         return (dst, src)
     return None
+
+
+def _resolve_global_node_index(
+    graph: RGCNGraph,
+    node_id: str,
+    allowed_types: Sequence[str],
+    context: str,
+) -> int:
+    for node_type in allowed_types:
+        typed_mapping = graph.node_to_local.get(node_type)
+        if typed_mapping is None:
+            continue
+        local = typed_mapping.get(node_id)
+        if local is None:
+            continue
+        return graph.node_offsets[node_type] + local
+    raise ValueError(
+        f"{context} references unknown node '{node_id}' for allowed types {tuple(allowed_types)}"
+    )
 
 
 def _ordered_node_types(types: Iterable[str]) -> List[str]:
