@@ -85,6 +85,59 @@ def assert_ho_alignment_with_kg(
                 )
 
 
+def assert_pair_loader_integrity(
+    kg_pos_splits: Mapping[str, Sequence[Edge]],
+    kg_neg_splits: Mapping[str, Sequence[Edge]],
+) -> None:
+    _require_split_keys(kg_pos_splits)
+    _require_split_keys(kg_neg_splits)
+
+    for split_name in SPLIT_NAMES:
+        n_pos = len(kg_pos_splits[split_name])
+        n_neg = len(kg_neg_splits[split_name])
+        if n_pos != n_neg:
+            raise AssertionError(
+                "K=1 constraint violated in materialized split files: "
+                f"split={split_name}, positives={n_pos}, negatives={n_neg}"
+            )
+
+    all_positive: set[Edge] = set()
+    for split_name in SPLIT_NAMES:
+        all_positive.update((drug, disease) for drug, disease in kg_pos_splits[split_name])
+
+    for split_name in SPLIT_NAMES:
+        neg_set = {(drug, disease) for drug, disease in kg_neg_splits[split_name]}
+        overlap = neg_set & all_positive
+        if overlap:
+            example = next(iter(overlap))
+            raise AssertionError(
+                "Negative edges overlap known positives. "
+                f"split={split_name}, overlap_count={len(overlap)}, example={example}"
+            )
+
+    pair_to_label: Dict[Edge, int] = {}
+    for split_name in SPLIT_NAMES:
+        for pair in kg_pos_splits[split_name]:
+            normalized = (pair[0], pair[1])
+            existing = pair_to_label.get(normalized)
+            if existing is not None and existing != 1:
+                raise AssertionError(
+                    "Conflicting labels across splits for pair "
+                    f"{normalized}: seen negative and positive."
+                )
+            pair_to_label[normalized] = 1
+
+        for pair in kg_neg_splits[split_name]:
+            normalized = (pair[0], pair[1])
+            existing = pair_to_label.get(normalized)
+            if existing is not None and existing != 0:
+                raise AssertionError(
+                    "Conflicting labels across splits for pair "
+                    f"{normalized}: seen positive and negative."
+                )
+            pair_to_label[normalized] = 0
+
+
 def _require_split_keys(mapping: Mapping[str, Sequence]) -> None:
     missing = [k for k in SPLIT_NAMES if k not in mapping]
     if missing:
