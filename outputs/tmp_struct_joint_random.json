@@ -1,0 +1,97 @@
+{
+  "seed": 42,
+  "split_type": "random",
+  "indication_relation": "indication",
+  "best_epoch": 0,
+  "struct_ho_enabled": true,
+  "lambda_ho": 0.1,
+  "tau": 0.1,
+  "ho_batch_size": 256,
+  "balance_key": "drug",
+  "counts": {
+    "graphs": {
+      "train": {
+        "num_nodes": 47559,
+        "num_edges": 7495551,
+        "num_relations": 15,
+        "num_nodes_by_type": {
+          "drug": 6673,
+          "disease": 18216,
+          "gene/protein": 19614,
+          "pathway": 3056
+        }
+      },
+      "val": {
+        "num_nodes": 47559,
+        "num_edges": 7494784,
+        "num_relations": 15,
+        "num_nodes_by_type": {
+          "drug": 6673,
+          "disease": 18216,
+          "gene/protein": 19614,
+          "pathway": 3056
+        }
+      },
+      "test": {
+        "num_nodes": 47559,
+        "num_edges": 7494784,
+        "num_relations": 15,
+        "num_nodes_by_type": {
+          "drug": 6673,
+          "disease": 18216,
+          "gene/protein": 19614,
+          "pathway": 3056
+        }
+      }
+    },
+    "pairs": {
+      "train": {
+        "total": 15020,
+        "pos": 7510,
+        "neg": 7510
+      },
+      "val": {
+        "total": 1878,
+        "pos": 939,
+        "neg": 939
+      },
+      "test": {
+        "total": 1878,
+        "pos": 939,
+        "neg": 939
+      }
+    },
+    "ho": {
+      "train": 477,
+      "val": 73,
+      "test": 71
+    },
+    "ho_struct_edge_counts": {
+      "train": {
+        "HO_drug_protein": 302,
+        "HO_protein_pathway": 240,
+        "HO_pathway_disease": 225
+      },
+      "val": {
+        "HO_drug_protein": 0,
+        "HO_protein_pathway": 0,
+        "HO_pathway_disease": 0
+      },
+      "test": {
+        "HO_drug_protein": 0,
+        "HO_protein_pathway": 0,
+        "HO_pathway_disease": 0
+      }
+    }
+  },
+  "val": {
+    "auroc": 0.5033961990244079,
+    "auprc": 0.49933006064354885,
+    "loss": 0.6931308501571639
+  },
+  "test": {
+    "auroc": 0.4968544471550524,
+    "auprc": 0.49614196877127736,
+    "loss": 0.6931514949463427
+  }
+}

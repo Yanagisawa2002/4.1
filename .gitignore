@@ -14,3 +14,4 @@ data/KG/indication_year_mapping_report.json
 data/KG/kg_filtered_subset_ext_drugprotein.csv
 data/KG/nodes.csv
 data/KG/pathway_pathway_data_subset.csv
+*.csv

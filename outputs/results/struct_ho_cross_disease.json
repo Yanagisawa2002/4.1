@@ -1,0 +1,88 @@
+{
+  "seed": 42,
+  "split_type": "cross-disease",
+  "indication_relation": "indication",
+  "best_epoch": 8,
+  "struct_ho_enabled": true,
+  "counts": {
+    "graphs": {
+      "train": {
+        "num_nodes": 47559,
+        "num_edges": 7495467,
+        "num_relations": 15,
+        "num_nodes_by_type": {
+          "drug": 6673,
+          "disease": 18216,
+          "gene/protein": 19614,
+          "pathway": 3056
+        }
+      },
+      "val": {
+        "num_nodes": 47559,
+        "num_edges": 7494630,
+        "num_relations": 15,
+        "num_nodes_by_type": {
+          "drug": 6673,
+          "disease": 18216,
+          "gene/protein": 19614,
+          "pathway": 3056
+        }
+      },
+      "test": {
+        "num_nodes": 47559,
+        "num_edges": 7494630,
+        "num_relations": 15,
+        "num_nodes_by_type": {
+          "drug": 6673,
+          "disease": 18216,
+          "gene/protein": 19614,
+          "pathway": 3056
+        }
+      }
+    },
+    "pairs": {
+      "train": {
+        "total": 14712,
+        "pos": 7356,
+        "neg": 7356
+      },
+      "val": {
+        "total": 1976,
+        "pos": 988,
+        "neg": 988
+      },
+      "test": {
+        "total": 2088,
+        "pos": 1044,
+        "neg": 1044
+      }
+    },
+    "ho_struct_edge_counts": {
+      "train": {
+        "HO_drug_protein": 346,
+        "HO_protein_pathway": 253,
+        "HO_pathway_disease": 238
+      },
+      "val": {
+        "HO_drug_protein": 0,
+        "HO_protein_pathway": 0,
+        "HO_pathway_disease": 0
+      },
+      "test": {
+        "HO_drug_protein": 0,
+        "HO_protein_pathway": 0,
+        "HO_pathway_disease": 0
+      }
+    }
+  },
+  "val": {
+    "auroc": 0.5275154075628186,
+    "auprc": 0.5363497622266615,
+    "loss": 3.066336010631762
+  },
+  "test": {
+    "auroc": 0.5227068378326801,
+    "auprc": 0.5139378539123983,
+    "loss": 3.4773873935714077
+  }
+}
