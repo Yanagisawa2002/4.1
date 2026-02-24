@@ -1,0 +1,16 @@
+data/External_Full/transductive_0.5.csv
+data/External_Full/transductive_1.0.csv
+data/External_Full/transductive_2.0.csv
+data/External_Full/transductive_3.0.csv
+data/External_Full/transductive_4.0.csv
+data/HO/HO.csv
+data/KG/augmentation_stats.json
+data/KG/disease_pathway_direct_mapped.csv
+data/KG/disease_protein_data_subset.csv
+data/KG/indication_data_subset_with_year.csv
+data/KG/indication_data_subset.csv
+data/KG/indication_pair_year.csv
+data/KG/indication_year_mapping_report.json
+data/KG/kg_filtered_subset_ext_drugprotein.csv
+data/KG/nodes.csv
+data/KG/pathway_pathway_data_subset.csv
