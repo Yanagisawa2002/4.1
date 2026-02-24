@@ -209,9 +209,11 @@ Current data layout:
 
 `data/KG/*.csv` edge tables (current KG relation tables)
 - primary schema: `relation,x_id,x_type,y_id,y_type`
+- additional supported schema in current data: `disease_id,pathway_id` (for disease-pathway mapping files)
 - examples:
   - `indication_data_subset.csv` (target relation positives)
   - `kg_filtered_subset_ext_drugprotein.csv` (heterogeneous KG edges)
+  - `disease_pathway_direct_mapped.csv` (disease-pathway table)
 
 `data/HO/HO.csv`
 - current schema includes:
@@ -225,6 +227,18 @@ Current normalization rules in pipeline:
 Split output schema (internal training IO) remains:
 - KG pairs: `drug,disease`
 - HO quads: `drug,protein,pathway,disease`
+
+Script defaults (current project):
+- `scripts/01_make_splits.py` defaults:
+  - `--kg-positive data/KG/indication_data_subset.csv`
+  - `--ho data/HO/HO.csv`
+  - `--split-type random`
+  - `--out-dir outputs/splits/<split-type>`
+- `scripts/02_train_base.py` defaults:
+  - `--node-types data/KG/nodes.csv`
+  - `--kg-edges data/KG` (directory mode; loads supported KG CSV schemas)
+  - `--split-dir outputs/splits/random`
+  - `--split-type random`
 
 Until further notice:
 - Do not assume “standard IO” column names unless explicitly mapped.

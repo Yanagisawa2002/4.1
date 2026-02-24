@@ -18,7 +18,7 @@ from src.checks import (
 Edge = Tuple[str, str]
 CanonicalEdgeType = Tuple[str, str, str]
 SPLIT_NAMES = ("train", "val", "test")
-PREFERRED_NODE_TYPE_ORDER = ("drug", "disease", "protein", "pathway")
+PREFERRED_NODE_TYPE_ORDER = ("drug", "disease", "gene/protein", "protein", "pathway")
 
 
 @dataclass(frozen=True)
@@ -156,58 +156,43 @@ def load_kg_edges(
     train_positive_pairs: set[Edge],
     keep_only_train_indication: bool = True,
 ) -> List[Tuple[str, str, str, str, str]]:
-    rows = _read_rows(Path(kg_edges_path))
-    src_col = _resolve_column(rows[0], ("x_id", "src", "source", "head", "u"))
-    rel_col = _resolve_column(rows[0], ("relation", "rel", "edge_type", "predicate"))
-    dst_col = _resolve_column(rows[0], ("y_id", "dst", "target", "tail", "v"))
-    src_type_col = _resolve_column(
-        rows[0], ("x_type", "src_type", "source_type"), required=False
-    )
-    dst_type_col = _resolve_column(
-        rows[0], ("y_type", "dst_type", "target_type"), required=False
-    )
+    kg_path = Path(kg_edges_path)
+    if not kg_path.exists():
+        raise ValueError(f"KG path does not exist: {kg_path}")
+
+    file_paths: List[Path]
+    strict_single_file = kg_path.is_file()
+    if strict_single_file:
+        file_paths = [kg_path]
+    else:
+        file_paths = sorted(kg_path.glob("*.csv"))
+        if not file_paths:
+            raise ValueError(f"No CSV files found under KG directory: {kg_path}")
 
     typed_edges: List[Tuple[str, str, str, str, str]] = []
     kept_indication_pairs: set[Edge] = set()
+    recognized_files: List[str] = []
 
-    for i, row in enumerate(rows, start=2):
-        src = row[src_col]
-        relation = row[rel_col]
-        dst = row[dst_col]
-        if not src or not relation or not dst:
-            raise ValueError(f"Empty src/relation/dst value at row {i} in {kg_edges_path}")
+    for file_path in file_paths:
+        edges_from_file, kept_pairs_from_file, recognized = _load_edges_from_file(
+            path=file_path,
+            node_type_map=node_type_map,
+            indication_relation=indication_relation,
+            train_positive_pairs=train_positive_pairs,
+            keep_only_train_indication=keep_only_train_indication,
+            strict=strict_single_file,
+        )
+        if not recognized:
+            continue
+        typed_edges.extend(edges_from_file)
+        kept_indication_pairs.update(kept_pairs_from_file)
+        recognized_files.append(file_path.name)
 
-        src_type = row[src_type_col] if src_type_col else node_type_map.get(src)
-        dst_type = row[dst_type_col] if dst_type_col else node_type_map.get(dst)
-        if src_type is None or dst_type is None:
-            raise ValueError(
-                f"Missing node type mapping for edge row {i} ({src}, {relation}, {dst})."
-            )
-        if src not in node_type_map or dst not in node_type_map:
-            raise ValueError(f"Edge uses node missing from node type file at row {i}")
-        if node_type_map[src] != src_type or node_type_map[dst] != dst_type:
-            raise ValueError(
-                f"Edge type mismatch at row {i}: ({src}:{src_type}, {dst}:{dst_type}) "
-                "does not match node type mapping."
-            )
-
-        if relation == indication_relation:
-            pair = _extract_drug_disease_pair(src, src_type, dst, dst_type)
-            if pair is None:
-                raise ValueError(
-                    "Indication relation must connect drug and disease nodes. "
-                    f"Found row {i}: ({src_type}, {relation}, {dst_type})"
-                )
-
-            if keep_only_train_indication and pair not in train_positive_pairs:
-                continue
-            kept_indication_pairs.add(pair)
-
-            # Canonicalize indication edges as drug -> disease for a single relation type.
-            src, dst = pair[0], pair[1]
-            src_type, dst_type = "drug", "disease"
-
-        typed_edges.append((src, relation, dst, src_type, dst_type))
+    if not recognized_files:
+        raise ValueError(
+            f"No supported KG edge files found for path={kg_path}. "
+            "Supported schemas: relation,x_id,x_type,y_id,y_type and disease_id,pathway_id."
+        )
 
     if keep_only_train_indication:
         missing = train_positive_pairs - kept_indication_pairs
@@ -226,6 +211,97 @@ def load_kg_edges(
     if not typed_edges:
         raise ValueError("No KG edges available after loading/filtering.")
     return _dedupe_typed_edges(typed_edges)
+
+
+def _load_edges_from_file(
+    path: Path,
+    node_type_map: Mapping[str, str],
+    indication_relation: str,
+    train_positive_pairs: set[Edge],
+    keep_only_train_indication: bool,
+    strict: bool,
+) -> tuple[List[Tuple[str, str, str, str, str]], set[Edge], bool]:
+    rows = _read_rows(path)
+    first_row = rows[0]
+
+    src_col = _resolve_column(first_row, ("x_id", "src", "source", "head", "u"), required=False)
+    dst_col = _resolve_column(first_row, ("y_id", "dst", "target", "tail", "v"), required=False)
+    rel_col = _resolve_column(first_row, ("relation", "rel", "edge_type", "predicate"), required=False)
+    src_type_col = _resolve_column(
+        first_row, ("x_type", "src_type", "source_type"), required=False
+    )
+    dst_type_col = _resolve_column(
+        first_row, ("y_type", "dst_type", "target_type"), required=False
+    )
+
+    if src_col and dst_col:
+        typed_edges: List[Tuple[str, str, str, str, str]] = []
+        kept_pairs: set[Edge] = set()
+        for i, row in enumerate(rows, start=2):
+            src = row[src_col].strip()
+            dst = row[dst_col].strip()
+            relation = row[rel_col].strip() if rel_col else path.stem
+            if not src or not relation or not dst:
+                raise ValueError(f"Empty src/relation/dst value at row {i} in {path}")
+
+            src_type = row[src_type_col].strip() if src_type_col else node_type_map.get(src)
+            dst_type = row[dst_type_col].strip() if dst_type_col else node_type_map.get(dst)
+            if src_type is None or dst_type is None:
+                raise ValueError(
+                    f"Missing node type mapping for edge row {i} ({src}, {relation}, {dst})."
+                )
+            if src not in node_type_map or dst not in node_type_map:
+                raise ValueError(f"Edge uses node missing from node type file at row {i} in {path}")
+            if node_type_map[src] != src_type or node_type_map[dst] != dst_type:
+                raise ValueError(
+                    f"Edge type mismatch at row {i} in {path}: "
+                    f"({src}:{src_type}, {dst}:{dst_type}) does not match node type mapping."
+                )
+
+            if relation == indication_relation:
+                pair = _extract_drug_disease_pair(src, src_type, dst, dst_type)
+                if pair is None:
+                    raise ValueError(
+                        "Indication relation must connect drug and disease nodes. "
+                        f"Found row {i} in {path}: ({src_type}, {relation}, {dst_type})"
+                    )
+
+                if keep_only_train_indication and pair not in train_positive_pairs:
+                    continue
+                kept_pairs.add(pair)
+                src, dst = pair[0], pair[1]
+                src_type, dst_type = "drug", "disease"
+
+            typed_edges.append((src, relation, dst, src_type, dst_type))
+        return typed_edges, kept_pairs, True
+
+    disease_col = _resolve_column(first_row, ("disease_id",), required=False)
+    pathway_col = _resolve_column(first_row, ("pathway_id",), required=False)
+    if disease_col and pathway_col:
+        typed_edges = []
+        for i, row in enumerate(rows, start=2):
+            disease = row[disease_col].strip()
+            pathway = row[pathway_col].strip()
+            if not disease or not pathway:
+                raise ValueError(f"Empty disease/pathway at row {i} in {path}")
+            if disease not in node_type_map or pathway not in node_type_map:
+                raise ValueError(
+                    f"Edge uses node missing from node mapping at row {i} in {path}"
+                )
+            if node_type_map[disease] != "disease" or node_type_map[pathway] != "pathway":
+                raise ValueError(
+                    f"Expected disease/pathway node types at row {i} in {path}, "
+                    f"got ({node_type_map[disease]}, {node_type_map[pathway]})"
+                )
+            typed_edges.append((disease, "disease_pathway", pathway, "disease", "pathway"))
+        return typed_edges, set(), True
+
+    if strict:
+        raise ValueError(
+            f"Unsupported KG edge schema in file {path}. "
+            "Supported schemas: relation,x_id,x_type,y_id,y_type and disease_id,pathway_id."
+        )
+    return [], set(), False
 
 
 def build_rgcn_graph(

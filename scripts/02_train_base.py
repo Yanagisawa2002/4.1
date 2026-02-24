@@ -25,22 +25,35 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train Base R-GCN model with L_pair only (no HO loss)."
     )
-    parser.add_argument("--kg-edges", required=True, help="KG edges CSV/TSV path.")
+    parser.add_argument(
+        "--kg-edges",
+        default="data/KG",
+        help=(
+            "KG edges CSV/TSV path or a directory containing KG CSV files. "
+            "Current project default: data/KG"
+        ),
+    )
     parser.add_argument(
         "--node-types",
-        required=True,
-        help="Node-type mapping CSV/TSV path (node_id,node_type).",
+        default="data/KG/nodes.csv",
+        help=(
+            "Node-type mapping CSV/TSV path. Supports id,type (current project) "
+            "and node_id,node_type. Default: data/KG/nodes.csv"
+        ),
     )
     parser.add_argument(
         "--split-dir",
-        required=True,
-        help="Directory containing kg_pos_*.csv and kg_neg_*.csv from split script.",
+        default="outputs/splits/random",
+        help=(
+            "Directory containing kg_pos_*.csv and kg_neg_*.csv from split script. "
+            "Default: outputs/splits/random"
+        ),
     )
     parser.add_argument(
         "--split-type",
-        default=None,
+        default="random",
         choices=["random", "cross-drug", "cross-disease"],
-        help="Split type for optional integrity checks.",
+        help="Split type for integrity checks. Default: random.",
     )
     parser.add_argument("--indication-relation", default="indication")
     parser.add_argument("--seed", type=int, default=42)

@@ -30,34 +30,39 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--kg-positive",
-        required=True,
+        default="data/KG/indication_data_subset.csv",
         help=(
             "Path to KG indication positives. Supports either "
-            "drug,disease or relation,x_id,x_type,y_id,y_type schema."
+            "drug,disease or relation,x_id,x_type,y_id,y_type schema. "
+            "Default: data/KG/indication_data_subset.csv"
         ),
     )
     parser.add_argument(
         "--ho",
-        required=True,
+        default="data/HO/HO.csv",
         help=(
             "Path to HO table. Supports either "
             "drug,protein,pathway,disease or "
-            "drugbank_id,protein_id,pathway_id,disease_id schema."
+            "drugbank_id,protein_id,pathway_id,disease_id schema. "
+            "Default: data/HO/HO.csv"
         ),
     )
     parser.add_argument(
         "--split-type",
-        required=True,
+        default="random",
         choices=["random", "cross-drug", "cross-disease"],
-        help="Split strategy for KG positives.",
+        help="Split strategy for KG positives. Default: random.",
     )
     parser.add_argument("--seed", type=int, default=42, help="Fixed random seed.")
     parser.add_argument("--val-ratio", type=float, default=0.1)
     parser.add_argument("--test-ratio", type=float, default=0.1)
     parser.add_argument(
         "--out-dir",
-        default="outputs/splits",
-        help="Directory where split files are written.",
+        default=None,
+        help=(
+            "Directory where split files are written. "
+            "Default: outputs/splits/<split-type>"
+        ),
     )
     return parser.parse_args()
 
@@ -223,7 +228,7 @@ def main() -> None:
     args = parse_args()
     kg_positive_path = Path(args.kg_positive)
     ho_path = Path(args.ho)
-    out_dir = Path(args.out_dir)
+    out_dir = Path(args.out_dir) if args.out_dir else Path("outputs/splits") / args.split_type
 
     kg_positive = _read_kg_positive_edges(kg_positive_path)
     ho_quads = _read_ho_quads(ho_path)
