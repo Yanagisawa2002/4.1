@@ -157,11 +157,15 @@ def load_kg_edges(
     keep_only_train_indication: bool = True,
 ) -> List[Tuple[str, str, str, str, str]]:
     rows = _read_rows(Path(kg_edges_path))
-    src_col = _resolve_column(rows[0], ("src", "source", "head", "u"))
+    src_col = _resolve_column(rows[0], ("x_id", "src", "source", "head", "u"))
     rel_col = _resolve_column(rows[0], ("relation", "rel", "edge_type", "predicate"))
-    dst_col = _resolve_column(rows[0], ("dst", "target", "tail", "v"))
-    src_type_col = _resolve_column(rows[0], ("src_type", "source_type"), required=False)
-    dst_type_col = _resolve_column(rows[0], ("dst_type", "target_type"), required=False)
+    dst_col = _resolve_column(rows[0], ("y_id", "dst", "target", "tail", "v"))
+    src_type_col = _resolve_column(
+        rows[0], ("x_type", "src_type", "source_type"), required=False
+    )
+    dst_type_col = _resolve_column(
+        rows[0], ("y_type", "dst_type", "target_type"), required=False
+    )
 
     typed_edges: List[Tuple[str, str, str, str, str]] = []
     kept_indication_pairs: set[Edge] = set()
@@ -187,31 +191,41 @@ def load_kg_edges(
                 "does not match node type mapping."
             )
 
-        if relation == indication_relation and keep_only_train_indication:
+        if relation == indication_relation:
             pair = _extract_drug_disease_pair(src, src_type, dst, dst_type)
             if pair is None:
                 raise ValueError(
                     "Indication relation must connect drug and disease nodes. "
                     f"Found row {i}: ({src_type}, {relation}, {dst_type})"
                 )
-            if pair not in train_positive_pairs:
+
+            if keep_only_train_indication and pair not in train_positive_pairs:
                 continue
             kept_indication_pairs.add(pair)
+
+            # Canonicalize indication edges as drug -> disease for a single relation type.
+            src, dst = pair[0], pair[1]
+            src_type, dst_type = "drug", "disease"
 
         typed_edges.append((src, relation, dst, src_type, dst_type))
 
     if keep_only_train_indication:
         missing = train_positive_pairs - kept_indication_pairs
         if missing:
-            example = next(iter(missing))
-            raise ValueError(
-                "KG does not contain all train indication positives. "
-                f"Missing count={len(missing)}; example={example}"
-            )
+            for drug, disease in sorted(missing):
+                drug_type = node_type_map.get(drug)
+                disease_type = node_type_map.get(disease)
+                if drug_type != "drug" or disease_type != "disease":
+                    raise ValueError(
+                        "Cannot inject missing train indication edge because node types "
+                        f"are invalid for pair={(drug, disease)} with "
+                        f"types={(drug_type, disease_type)}"
+                    )
+                typed_edges.append((drug, indication_relation, disease, "drug", "disease"))
 
     if not typed_edges:
         raise ValueError("No KG edges available after loading/filtering.")
-    return typed_edges
+    return _dedupe_typed_edges(typed_edges)
 
 
 def build_rgcn_graph(
@@ -372,6 +386,19 @@ def _ordered_node_types(types: Iterable[str]) -> List[str]:
     ordered: List[str] = [name for name in PREFERRED_NODE_TYPE_ORDER if name in type_set]
     ordered.extend(sorted(type_set - set(ordered)))
     return ordered
+
+
+def _dedupe_typed_edges(
+    edges: Sequence[Tuple[str, str, str, str, str]],
+) -> List[Tuple[str, str, str, str, str]]:
+    seen: set[Tuple[str, str, str, str, str]] = set()
+    deduped: List[Tuple[str, str, str, str, str]] = []
+    for edge in edges:
+        if edge in seen:
+            continue
+        seen.add(edge)
+        deduped.append(edge)
+    return deduped
 
 
 def _read_rows(path: Path) -> List[Dict[str, str]]:

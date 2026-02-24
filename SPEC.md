@@ -195,4 +195,39 @@ R-GCN encoder only.
 
 Reproducible splits.
 
+10. Current IO Contract (Temporary, Project-Specific)
+
+IMPORTANT:
+At the current stage, we DO NOT use a standardized/canonical IO schema.
+All code must follow the project files and columns below.
+
+Current data layout:
+
+`data/KG/nodes.csv`
+- columns: `id,type,name,source`
+- node ID examples: `drug::DB00001`, `disease::5044`, `gene/protein::1129`, `pathway::R-HSA-390648`
+
+`data/KG/*.csv` edge tables (current KG relation tables)
+- primary schema: `relation,x_id,x_type,y_id,y_type`
+- examples:
+  - `indication_data_subset.csv` (target relation positives)
+  - `kg_filtered_subset_ext_drugprotein.csv` (heterogeneous KG edges)
+
+`data/HO/HO.csv`
+- current schema includes:
+  - `drugbank_id`, `protein_id`, `pathway_id`, `disease_id`
+  - plus additional text/metadata columns (e.g., rationale fields)
+
+Current normalization rules in pipeline:
+- `drugbank_id` values like `DB00334` must be normalized to `drug::DB00334`
+- `pathway_id` values like `http://bioregistry.io/reactome:R-HSA-390648` must be normalized to `pathway::R-HSA-390648`
+
+Split output schema (internal training IO) remains:
+- KG pairs: `drug,disease`
+- HO quads: `drug,protein,pathway,disease`
+
+Until further notice:
+- Do not assume “standard IO” column names unless explicitly mapped.
+- Treat this section as authoritative for current project IO.
+
 END OF SPEC

@@ -5,7 +5,7 @@ import csv
 import json
 from pathlib import Path
 import sys
-from typing import Iterable, List, Sequence, Tuple
+from typing import Dict, List, Mapping, Sequence, Tuple
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -31,12 +31,19 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--kg-positive",
         required=True,
-        help="Path to CSV/TSV with columns: drug,disease",
+        help=(
+            "Path to KG indication positives. Supports either "
+            "drug,disease or relation,x_id,x_type,y_id,y_type schema."
+        ),
     )
     parser.add_argument(
         "--ho",
         required=True,
-        help="Path to CSV/TSV with columns: drug,protein,pathway,disease",
+        help=(
+            "Path to HO table. Supports either "
+            "drug,protein,pathway,disease or "
+            "drugbank_id,protein_id,pathway_id,disease_id schema."
+        ),
     )
     parser.add_argument(
         "--split-type",
@@ -71,45 +78,137 @@ def _read_rows(path: Path) -> List[dict]:
             raise ValueError(f"No header detected in file: {path}")
         rows: List[dict] = []
         for row in reader:
-            clean = {k: (v.strip() if isinstance(v, str) else v) for k, v in row.items()}
+            clean: Dict[str, str] = {}
+            for key, value in row.items():
+                if key is None:
+                    continue
+                clean[key.strip()] = value.strip() if isinstance(value, str) else value
             rows.append(clean)
+    if not rows:
+        raise ValueError(f"No data rows found in {path}")
     return rows
 
 
 def _read_kg_positive_edges(path: Path) -> List[Edge]:
     rows = _read_rows(path)
-    required = ("drug", "disease")
-    _validate_columns(path, rows, required)
+    first_row = rows[0]
+
+    drug_col = _resolve_column(first_row, ("drug",), required=False)
+    disease_col = _resolve_column(first_row, ("disease",), required=False)
+    if drug_col and disease_col:
+        edges: List[Edge] = []
+        for i, row in enumerate(rows, start=2):
+            drug = _normalize_drug_id(row[drug_col])
+            disease = row[disease_col].strip()
+            if not drug or not disease:
+                raise ValueError(f"Empty drug/disease at {path}:{i}")
+            edges.append((drug, disease))
+        return edges
+
+    rel_col = _resolve_column(first_row, ("relation", "rel", "edge_type"), required=False)
+    src_col = _resolve_column(first_row, ("x_id", "src", "source", "head", "u"))
+    dst_col = _resolve_column(first_row, ("y_id", "dst", "target", "tail", "v"))
+    src_type_col = _resolve_column(first_row, ("x_type", "src_type", "source_type"), required=False)
+    dst_type_col = _resolve_column(first_row, ("y_type", "dst_type", "target_type"), required=False)
+
     edges: List[Edge] = []
     for i, row in enumerate(rows, start=2):
-        drug = row["drug"]
-        disease = row["disease"]
-        if not drug or not disease:
-            raise ValueError(f"Empty drug/disease at {path}:{i}")
-        edges.append((drug, disease))
+        relation = row[rel_col].strip() if rel_col else "indication"
+        if relation != "indication":
+            continue
+
+        src = row[src_col].strip()
+        dst = row[dst_col].strip()
+        if not src or not dst:
+            raise ValueError(f"Empty x_id/y_id at {path}:{i}")
+        src_type = row[src_type_col].strip() if src_type_col else None
+        dst_type = row[dst_type_col].strip() if dst_type_col else None
+
+        pair = _extract_drug_disease_pair(src, dst, src_type, dst_type)
+        if pair is None:
+            raise ValueError(
+                "Unable to infer drug-disease indication pair at "
+                f"{path}:{i} from row={(src, relation, dst, src_type, dst_type)}"
+            )
+        edges.append(pair)
+
+    if not edges:
+        raise ValueError(f"No indication edges found in {path}")
     return edges
 
 
 def _read_ho_quads(path: Path) -> List[HOQuad]:
     rows = _read_rows(path)
-    required = ("drug", "protein", "pathway", "disease")
-    _validate_columns(path, rows, required)
+    first_row = rows[0]
+    drug_col = _resolve_column(first_row, ("drug", "drug_id", "drugbank_id", "x_id"))
+    protein_col = _resolve_column(first_row, ("protein", "protein_id", "target_id"))
+    pathway_col = _resolve_column(first_row, ("pathway", "pathway_id"))
+    disease_col = _resolve_column(first_row, ("disease", "disease_id", "diseaseid"))
+
     quads: List[HOQuad] = []
     for i, row in enumerate(rows, start=2):
-        quad = (row["drug"], row["protein"], row["pathway"], row["disease"])
+        quad = (
+            _normalize_drug_id(row[drug_col]),
+            row[protein_col].strip(),
+            _normalize_pathway_id(row[pathway_col]),
+            row[disease_col].strip(),
+        )
         if any(not item for item in quad):
             raise ValueError(f"Empty HO value at {path}:{i}")
         quads.append(quad)
     return quads
 
 
-def _validate_columns(path: Path, rows: Sequence[dict], required: Iterable[str]) -> None:
-    if not rows:
-        raise ValueError(f"No data rows found in {path}")
-    keys = set(rows[0].keys())
-    missing = [col for col in required if col not in keys]
-    if missing:
-        raise ValueError(f"Missing columns in {path}: {missing}")
+def _resolve_column(
+    row: Mapping[str, str],
+    candidates: Sequence[str],
+    required: bool = True,
+) -> str | None:
+    key_map = {key.lower(): key for key in row.keys()}
+    for candidate in candidates:
+        key = key_map.get(candidate.lower())
+        if key is not None:
+            return key
+    if required:
+        raise ValueError(f"Missing required column. Tried candidates={list(candidates)}")
+    return None
+
+
+def _extract_drug_disease_pair(
+    src: str,
+    dst: str,
+    src_type: str | None,
+    dst_type: str | None,
+) -> Edge | None:
+    if src_type is None or dst_type is None:
+        return (_normalize_drug_id(src), dst)
+    if src_type == "drug" and dst_type == "disease":
+        return (_normalize_drug_id(src), dst)
+    if src_type == "disease" and dst_type == "drug":
+        return (_normalize_drug_id(dst), src)
+    return None
+
+
+def _normalize_drug_id(drug_id: str) -> str:
+    value = drug_id.strip()
+    if value.startswith("drug::"):
+        return value
+    if value.upper().startswith("DB"):
+        return f"drug::{value}"
+    return value
+
+
+def _normalize_pathway_id(pathway_id: str) -> str:
+    value = pathway_id.strip()
+    if value.startswith("pathway::"):
+        return value
+    if "reactome:" in value:
+        reactome_id = value.split("reactome:", 1)[1]
+        if reactome_id.startswith("R-HSA-"):
+            return f"pathway::{reactome_id}"
+    if value.startswith("R-HSA-"):
+        return f"pathway::{value}"
+    return value
 
 
 def _write_csv(path: Path, header: Sequence[str], rows: Sequence[Sequence[str]]) -> None:
